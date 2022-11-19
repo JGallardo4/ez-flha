@@ -1,2 +1,6 @@
 env/
-config.py
+config.ini
+files/img/*
+files/pdf/*
+__pycache__/
+geckodriver.log
