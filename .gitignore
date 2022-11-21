@@ -1,6 +1,5 @@
 env/
 config.ini
-files/img/*
-files/pdf/*
+files/*
 __pycache__/
 geckodriver.log
