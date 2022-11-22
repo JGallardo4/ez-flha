@@ -1,6 +1,5 @@
 import click
-from imap_tools import MailBox
-from imap_tools import AND, OR, NOT
+from imap_tools import MailBox, MailMessageFlags, AND, OR, NOT
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
@@ -28,17 +27,15 @@ config = configparser.ConfigParser(allow_no_value=True)
 config.read("./config.ini")
 
 email_queue = dict()
-sitedocs_submissions = dict()
+sitedocs_submissions = set()
 
 @click.command()
 @click.option("--headless", is_flag=True, flag_value=True, default=False, help="Run browser automation in headless mode.")
 def process_flhas(headless):
     """ This program downloads pdf files from email, converts to PNG, and submits to Sitedocs. """
-
-    check_latest_submission_from_memory()
     find_missing_dates(headless=True)
-    emails = gather_emails()
-    process_emails(emails)
+    gather_emails()
+    process_emails()
     convert_pdfs()
     submit_flhas(headless=False)
 
@@ -46,13 +43,11 @@ def submit_flhas(headless):
     img_folder = config["IO"]["IMG_FOLDER"]
     img_folder_abs_path = path.abspath(img_folder)
 
-    file_list = sorted(listdir(img_folder), key=lambda x: str_to_date(x[1].partition('_')[1]))
-    print(file_list)
+    # Ready image files
+    for filename in listdir(img_folder):
+        flha_date_str = filename.partition('_')[0]
 
-    for filename in file_list:
-        flha_date_str = filename[1].partition('_')[0]
-
-        full_img_path = f"{img_folder_abs_path}/{filename[1]}"
+        full_img_path = f"{img_folder_abs_path}/{filename}"
 
         if(flha_date_str in email_queue):
             if("images" in email_queue[flha_date_str]):
@@ -60,10 +55,11 @@ def submit_flhas(headless):
             else:
                 email_queue[flha_date_str]["images"] = [full_img_path]
     
+    driver = navigate_to_flhas(headless=True)
+
     for flha in email_queue:
-        if(not check_file_is_archive(flha)):
-            print(f"We need to process {flha}")
-            driver = navigate_to_flhas(headless)
+        if(flha not in sitedocs_submissions):
+            print(f"Processing {flha}")
 
             # New FLHA
             new_flha_menu_option = driver.find_element(By.CSS_SELECTOR, "[data-id='sidebar-submenu-new-form']")
@@ -71,16 +67,16 @@ def submit_flhas(headless):
 
             # Label
             label = driver.find_element(By.ID, "company-info-label")
-            label.send_keys(filename[1].rpartition('_')[0])
+            label.send_keys(email_queue[flha]["label"])
 
             # Permit
             permit = driver.find_element(By.XPATH, "/html/body/div[1]/div/div[4]/main/div/div[1]/div[4]/div[2]/div[1]/div/div[2]/div[1]/div/div/textarea[1]")
             permit_value = None
 
             if(email_queue[flha]["permit"]):
-                permit_value = email_queue[flha_date_str]["permit"]
+                permit_value = email_queue[flha]["permit"]
             else:
-                permit_value = click.prompt(f"Please enter the permit number for {flha_date_str}", type=str)
+                permit_value = click.prompt(f"Please enter the permit number for {flha}", type=str)
             
             permit.send_keys(permit_value)
 
@@ -137,42 +133,33 @@ def submit_flhas(headless):
             click.pause("Please submit your signature, then press any key to continue!")
 
             # Share
-            # share_button = driver.find_elements(By.XPATH, "/html/body/div[1]/div/div[4]/main/header/div/button[2]/span[1]/svg")
-            # share_button.click()
-            
+            share_button = driver.find_elements(By.ID, "form-share-button")[0]
+            share_button.click()
         else:
             # Move file to archive
-            old = f'{config["IO"]["IMG_FOLDER"]}/{filename}'
-            new = f'{config["IO"]["IMG_ARCHIVE"]}/{filename}'
-            shutil.move(old, new)
+            old = config["IO"]["IMG_FOLDER"]
+            new = config["IO"]["IMG_ARCHIVE"]
+            shutil.move(old, new, filename)
+    
+    driver.quit()
 
-def check_file_is_archive(date_str):
-    file_date = str_to_date(date_str)
-    latest_str = config["APP"]["LATEST_SUBMISSION"]
-    latest_date = str_to_date(latest_str)
-
-    return (latest_date - file_date) >= timedelta(0)
+def archive(current_path, archive_path, filename):
+    print(f"Archiving file {filename}")
+    old = f'{current_path}/{filename}'
+    new = f'{archive_path}/{filename}'
+    shutil.move(old, new)
 
 def str_to_date(date_str):
     return datetime.strptime(date_str, "%Y.%m.%d").replace(tzinfo=timezone("Canada/Mountain"))
 
 def date_to_str(date_obj):
-    return date_obj.strftime('%Y.%m.%d')
-
-def print_days_since(latest_date, latest_date_str):
-    days = get_time_since(latest_date).days
-
-    print(f"It has been {days} days since your last submission on {latest_date_str}")
+    return date_obj.strftime("%Y.%m.%d")
 
 def check_up_to_date(latest_date):
     if(get_time_since(latest_date) <= timedelta(2)):
         print_days_since(latest_date, latest)
         print("You are up to date")
         quit()
-
-def get_time_since(latest_date):
-    result = datetime.today().replace(tzinfo=timezone("Canada/Mountain")) - latest_date
-    return result
 
 def save_pdf(path_dest, file):
     if (not path.exists(path_dest)):
@@ -186,49 +173,55 @@ def convert_pdfs():
     # Convert pdfs to jpegs and save locally
     pdf_folder = config["IO"]["PDF_FOLDER"]
     pdf_archive_folder = config["IO"]["PDF_ARCHIVE"]
+    img_folder = config["IO"]["IMG_FOLDER"]
 
     for index, filename in enumerate(listdir(pdf_folder)):
         file_date_str = filename.partition('_')[0]
 
         if(file_date_str not in sitedocs_submissions):
-            if(not file_date_str in listdir(pdf_folder)):
-                file_date = str_to_date(file_date_str)
+            if(not file_date_str in listdir(pdf_folder)):              
+                full_pdf_path = f"{pdf_folder}/{filename}"
 
-                if (file_date > latest_date):
-                    full_pdf_path = f'{pdf_folder}/{filename}'
-                    with tempfile.TemporaryDirectory() as path:
-                        images_from_path = convert_from_path(f"{full_pdf_path}", output_folder=config["IO"]["IMG_FOLDER"], fmt="jpeg", output_file=filename)
+                with tempfile.TemporaryDirectory() as path:
+                    images_from_path = convert_from_path(f"{full_pdf_path}", output_folder=img_folder, fmt="jpeg", output_file=filename)
             else:
                 print(f"jpgs for date {file_date_str} already exist")
         else:
-            # Move file to archive
-            old = f'{pdf_folder}/{filename}'
-            new = f'{pdf_archive_folder}/{filename}'
-            shutil.move(old, new)
+            archive(pdf_folder, pdf_archive_folder, filename)
 
-    # Fix extra suffix
+    
     img_folder = config["IO"]["IMG_FOLDER"]
+    img_archive_folder = config["IO"]["IMG_ARCHIVE"]
     for index, filename in enumerate(listdir(img_folder)):
+        # Move old jpgs to archive
+        file_date_str = filename.partition('_')[0]
+        if(file_date_str in sitedocs_submissions):
+            archive(img_folder, img_archive_folder, filename)
+            continue
+
+        # Fix extra suffix
         dst = re.sub(r'(?<=A)(.*?)(?=-)', '', filename)
         dst = re.sub(r'-', '_', dst)
         src =f"{img_folder}/{filename}"
         dst =f"{img_folder}/{dst}"
         rename(src, dst)
 
-def process_emails(emails):
-    for email in emails:
-        date = email.date.strftime('%Y.%m.%d')
+def process_emails():
+    # Save pdfs from email
+    for email in email_queue:
         ast = config["FORM"]["ASSISTANT"].title().replace(" ", "")
         pc = config["FORM"]["PARTY_CHIEF"].title().replace(" ", "")
-        pdf_filename = f"{date}_{pc}_{ast}_FLHA.pdf"
+        filename = f"{email}_{pc}_{ast}_FLHA"
+        pdf_filename = f"{filename}.pdf"
         pdf_folder = config["IO"]["PDF_FOLDER"]
         full_pdf_path = f"{pdf_folder}/{pdf_filename}"
-        attachment = email.attachments[0]
+        attachment = email_queue[email]["attachments"][0]
 
         save_pdf(full_pdf_path, attachment)
 
+        email_queue[email]["label"] = filename
+
 def gather_emails():
-    emails = []
     smtp_server = config["EMAIL"]["SMTP_SERVER"]
     from_email = config["EMAIL"]["FROM_EMAIL"]
     pwd = config["EMAIL"]["APP_PWD"]
@@ -240,23 +233,22 @@ def gather_emails():
             if(len(msg.attachments)==1 and msg.date.date() not in sitedocs_submissions and (current_date == None or msg.date.day != current_date)):
                 for att in msg.attachments:
                     if(att.content_type=="application/pdf"):
-                        emails.append(msg)
                         current_date = msg.date.day
-    
-    print("Found the following files:")
-    for msg in emails:        
-        date_str = date_to_str(msg.date)
 
-        permit = None
+                        date_str = date_to_str(msg.date)
 
-        if(msg.subject.isdigit() and msg.subject.length == 3):
-            permit = msg.subject
+                        if(date_str not in sitedocs_submissions):
+                            permit = None
+                            if(msg.subject.isdigit() and msg.subject.length == 3):
+                                permit = msg.subject
 
-        email_queue[date_str] = { "permit": permit }
+                            email_queue[date_str] = { "permit": permit, "attachments": msg.attachments }
 
-        print(f"Date: {date_str} File: {msg.attachments[0].filename}")
-
-    return emails
+                            print(f"Date: {date_str} File: {msg.attachments[0].filename}")
+                        else:
+                            # Flag message as seen
+                            seen_flag = MailMessageFlags.SEEN
+                            mailbox.flag([msg.uid], seen_flag, True)
 
 def navigate_to_flhas(headless):
     # Initialize driver
@@ -298,20 +290,15 @@ def find_missing_dates(headless):
 
     # Collect history items
     history_items = driver.find_elements(By.CSS_SELECTOR, "[data-id='sidebar-signed-form-item-label-text']")
-    latest_submissions = []
 
     for item in history_items:
         if(config["FORM"]["PARTY_CHIEF"].title().replace(" ", "") in item.text and config["FORM"]["ASSISTANT"].title().replace(" ", "") in item.text):
-            latest_submissions.append(item.text)
-    
-    date_strings = []
-    for item in latest_submissions:
-        date_strings.append(item[:item.index("_")])
-
-    for date in date_strings:
-        sitedocs_submissions.append(datetime.strptime(date, "%Y.%m.%d").replace(tzinfo=timezone("Canada/Mountain")))
+            sitedocs_submissions.add(item.text[:item.text.index("_")])
 
     driver.quit()
+
+    sorted_submissions = sorted(sitedocs_submissions, key=lambda date: str_to_date(date))
+    print(f"Sitedocs submissions:\n{sorted_submissions}")
 
 def log_in_sitedocs(driver):
     try:
