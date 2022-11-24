@@ -31,8 +31,16 @@ sitedocs_submissions = set()
 
 @click.command()
 @click.option("--headless", is_flag=True, flag_value=True, default=False, help="Run browser automation in headless mode.")
-def process_flhas(headless):
+@click.option("--test", is_flag=True, flag_value=True, default=False, help="Run in test mode")
+def process_flhas(headless, test):
     """ This program downloads pdf files from email, converts to PNG, and submits to Sitedocs. """
+
+    if(test):
+        test()
+        quit()
+
+    check_up_to_date()
+
     find_missing_dates(headless=True)
     gather_emails()
     process_emails()
@@ -55,9 +63,9 @@ def submit_flhas(headless):
             else:
                 email_queue[flha_date_str]["images"] = [full_img_path]
     
-    driver = navigate_to_flhas(headless=True)
+    driver = navigate_to_flhas(headless=False)
 
-    for flha in email_queue:
+    for index, flha in email_queue:
         if(flha not in sitedocs_submissions):
             print(f"Processing {flha}")
 
@@ -135,6 +143,16 @@ def submit_flhas(headless):
             # Share
             share_button = driver.find_elements(By.ID, "form-share-button")[0]
             share_button.click()
+
+            if(index != email_queue.length - 1):
+                # Open forms menu
+                forms_menu = driver.find_element(By.XPATH, '//*[@id="forms-nav-item"]')
+                forms_menu.click()
+                time.sleep(5)
+
+                # Open FLHAs Menu
+                flha_menu = driver.find_element(By.CSS_SELECTOR, "[data-id='sidebar-form-item-name-button']")
+                flha_menu.click()
         else:
             # Move file to archive
             old = config["IO"]["IMG_FOLDER"]
@@ -155,11 +173,22 @@ def str_to_date(date_str):
 def date_to_str(date_obj):
     return date_obj.strftime("%Y.%m.%d")
 
-def check_up_to_date(latest_date):
-    if(get_time_since(latest_date) <= timedelta(2)):
-        print_days_since(latest_date, latest)
-        print("You are up to date")
+def check_up_to_date():
+    latest = None
+
+    if(config["APP"]["LATEST"]):
+        latest = config["APP"]["LATEST"]
+    else:
+        return
+        
+    if(get_time_since(latest) <= timedelta(2)):
+        print(f"Your last submission was on {latest}\nYou are up to date")
         quit()
+
+def get_time_since(date_str):
+    date_from = str_to_date(date_str)
+    result = datetime.today().replace(tzinfo=timezone("Canada/Mountain")) - date_from
+    return result
 
 def save_pdf(path_dest, file):
     if (not path.exists(path_dest)):
@@ -283,7 +312,7 @@ def navigate_to_flhas(headless):
 
 def find_missing_dates(headless):
     driver = navigate_to_flhas(headless)
-
+    
     # Check previously signed FLHAs 
     history_menu = driver.find_elements(By.XPATH, "/html/body/div[1]/div/div[3]/div/div/div/div[22]/div/div/div[2]/nav/a[4]/div/div/div/div")
     history_menu[0].click()
@@ -298,7 +327,14 @@ def find_missing_dates(headless):
     driver.quit()
 
     sorted_submissions = sorted(sitedocs_submissions, key=lambda date: str_to_date(date))
+
+    config["APP"]["LATEST"] = max(sorted_submissions)
+    with open('config.ini', 'w') as configfile:
+        config.write(configfile)
+
     print(f"Sitedocs submissions:\n{sorted_submissions}")
+
+    check_up_to_date()
 
 def log_in_sitedocs(driver):
     try:
@@ -332,4 +368,3 @@ def test():
 
 if __name__ == '__main__':
     process_flhas()
-    # test()
