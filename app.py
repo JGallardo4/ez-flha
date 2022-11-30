@@ -65,7 +65,9 @@ def submit_flhas(headless):
     
     driver = navigate_to_flhas(headless=False)
 
-    for index, flha in email_queue:
+    for index, (key, value) in enumerate(email_queue.items()):
+        flha = key
+
         if(flha not in sitedocs_submissions):
             print(f"Processing {flha}")
 
@@ -144,7 +146,7 @@ def submit_flhas(headless):
             share_button = driver.find_elements(By.ID, "form-share-button")[0]
             share_button.click()
 
-            if(index != email_queue.length - 1):
+            if(index != len(email_queue) - 1):
                 # Open forms menu
                 forms_menu = driver.find_element(By.XPATH, '//*[@id="forms-nav-item"]')
                 forms_menu.click()
